@@ -4,10 +4,19 @@
 
 #include <unistd.h>
 
+#define GST_USE_UNSTABLE_API
 #include <gst/gst.h>
+#include <gst/gl/gl.h>
 #include <gst/app/gstappsink.h>
-//#include <gdk-pixbuf-2.0/gdk-pixbuf/gdk-pixbuf-core.h>
+#include <gst/gl/x11/gstgldisplay_x11.h>
+#include <gst/gl/gstglmemory.h>
+
 #include <gtk/gtk.h>
+
+#define GL_GLEXT_PROTOTYPES 1
+#define GL3_PROTOTYPES 1
+#include <GL/gl.h>
+#include <GL/glx.h>
 
 using namespace vr;
 
@@ -16,6 +25,10 @@ void check_error(int line, EVRInitError error) { if (error != 0) printf("%d: err
 int VIDEOFPS = 5;
 
 VROverlayHandle_t handle;
+Display *dpy;
+GLXContext ctx;
+GLXPbuffer pbuf;
+
 
 float x = 2.0;
 float y = 1.0;
@@ -48,20 +61,49 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 	if (gst_buffer_map (buffer, &map, GST_MAP_READ)) {
 		auto pixbuf = gdk_pixbuf_new_from_data (map.data, GDK_COLORSPACE_RGB, TRUE, 8, width, height, GST_ROUND_UP_4 (width * 4), NULL, NULL);
 		guchar* rgb = gdk_pixbuf_get_pixels(pixbuf);
-
-		// this crashes steamvr, badly
 		int bps = gdk_pixbuf_get_bits_per_sample(pixbuf);
-		std::cout << "Uploading " << width << "x" << height << " " << bps << " buffer to overlay " << handle << std::endl;
-		VROverlay()->SetOverlayRaw(handle, rgb, width, height, 4);
 
-		//eww
+		// Worst: Save images and set from image.
+		// SteamVR maintains cache filename - image, so we need a new filename every time
 		/*
-		std::string fn = std::string("/tmp/test") + std::to_string(counter) + std::string(".png");
-		unlink(fn.c_str());
-		fn = std::string("/tmp/test") + std::to_string(++counter) + std::string(".png");
-		gdk_pixbuf_save (pixbuf, fn.c_str(), "png", NULL, NULL);
-		VROverlay()->SetOverlayFromFile(handle, fn.c_str());
-		*/
+		 std::string fn = std::string("/tmp/test") + std::to_string(counter) + std::string(".png");
+		 unlink(fn.c_str());
+		 fn = std::string("/tmp/test") + std::to_string(++counter) + std::string(".png");
+		 gdk_pixbuf_save (pixbuf, fn.c_str(), "png", NULL, NULL);
+		 VROverlay()->SetOverlayFromFile(handle, fn.c_str());
+		 */
+
+		// better: raw pixel
+		// not optimized in SteamVR, flickers on update
+		//std::cout << "Uploading " << width << "x" << height << " " << bps << " buffer to overlay " << handle << std::endl;
+		//VROverlay()->SetOverlayRaw(handle, rgb, width, height, 4);
+
+		// still better: Copy to GL texture and update overlay with it
+		if ( !glXMakeContextCurrent(dpy, pbuf, pbuf, ctx) ){ printf("failed to make current\n"); }
+		GLuint texid;
+		glGenTextures(1, &texid); // TODO: reuse
+		glBindTexture(GL_TEXTURE_2D, texid);
+
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+
+
+		//glTexSubImage2D(GL_TEXTURE_2D, 0 ,0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
+
+		Texture_t tex;
+		tex.handle = &texid;
+		tex.eColorSpace = ColorSpace_Auto;
+		tex.eType = TextureType_OpenGL;
+		std::cout << "Uploading " << width << "x" << height << " " << bps << " OpenGL texture " << texid << "  to overlay " << handle << std::endl;
+		VROverlay()->SetOverlayTexture(handle, &tex);
+
+		glDeleteTextures(1, &texid);
+
+		// best: use gstreamer gstglupload to get GL texture directly
+		// TODO
 
 		g_object_unref(pixbuf);
 	}
@@ -70,11 +112,57 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 	return GST_FLOW_OK;
 }
 
+typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
+typedef Bool (*glXMakeContextCurrentARBProc)(Display*, GLXDrawable, GLXDrawable, GLXContext);
+static glXCreateContextAttribsARBProc glXCreateContextAttribsARB = 0;
+static glXMakeContextCurrentARBProc glXMakeContextCurrentARB = 0;
+
 int main(int argc, char **argv) { (void) argc; (void) argv;
 	if (argc <= 1) {
 		std::cout << "Arg 1 should be xid. Tipp: Start " << argv[0] << " " << "$(xwininfo |grep 'Window id' | awk '{print $4;}')" << std::endl;
 		return 1;
 	}
+
+	static int visual_attribs[] = {
+		None
+	};
+	int context_attribs[] = {
+		GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+		GLX_CONTEXT_MINOR_VERSION_ARB, 0,
+		None
+	};
+
+	dpy = XOpenDisplay(0);
+	int fbcount = 0;
+	GLXFBConfig* fbc = glXChooseFBConfig(dpy, DefaultScreen(dpy), visual_attribs, &fbcount);
+	if ( !fbc) { fprintf(stderr, "Failed to get FBConfig\n"); }
+
+	glXCreateContextAttribsARB = (glXCreateContextAttribsARBProc)glXGetProcAddressARB( (const GLubyte *) "glXCreateContextAttribsARB");
+	glXMakeContextCurrentARB = (glXMakeContextCurrentARBProc)glXGetProcAddressARB( (const GLubyte *) "glXMakeContextCurrent");
+	if ( !(glXCreateContextAttribsARB && glXMakeContextCurrentARB) ){ fprintf(stderr, "missing support for GLX_ARB_create_context\n"); }
+
+	if ( !( ctx = glXCreateContextAttribsARB(dpy, fbc[0], 0, True, context_attribs)) ){ fprintf(stderr, "Failed to create opengl context\n"); }
+
+	int pbuffer_attribs[] = {
+		GLX_PBUFFER_WIDTH, 800,
+		GLX_PBUFFER_HEIGHT, 600,
+		None
+	};
+	pbuf = glXCreatePbuffer(dpy, fbc[0], pbuffer_attribs);
+
+	if ( !glXMakeContextCurrent(dpy, pbuf, pbuf, ctx) ){ printf("failed to make current\n"); }
+
+	XFree(fbc);
+	XSync(dpy, False);
+
+	printf("GL_RENDERER   = %s\n", (char *) glGetString(GL_RENDERER));
+	printf("GL_VERSION    = %s\n", (char *) glGetString(GL_VERSION));
+	printf("GL_VENDOR     = %s\n", (char *) glGetString(GL_VENDOR));
+
+	if ( !glXMakeContextCurrent(dpy, 0, 0, 0) ){ printf("failed to make current\n"); }
+
+
+
 	EVRInitError error;
 	VR_Init(&error, vr::VRApplication_Overlay);
 	check_error(__LINE__, error);
