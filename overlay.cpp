@@ -22,6 +22,11 @@ using namespace vr;
 
 void check_error(int line, EVRInitError error) { if (error != 0) printf("%d: error %s\n", line, VR_GetVRInitErrorAsSymbol(error)); }
 
+
+void GLAPIENTRY messageCallback( GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam ) {
+	printf("GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n", ( type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : "" ), type, severity, message );
+}
+
 int VIDEOFPS = 5;
 
 VROverlayHandle_t handle;
@@ -158,6 +163,9 @@ int main(int argc, char **argv) { (void) argc; (void) argv;
 	printf("GL_RENDERER   = %s\n", (char *) glGetString(GL_RENDERER));
 	printf("GL_VERSION    = %s\n", (char *) glGetString(GL_VERSION));
 	printf("GL_VENDOR     = %s\n", (char *) glGetString(GL_VENDOR));
+
+	glEnable              ( GL_DEBUG_OUTPUT );
+	glDebugMessageCallback( messageCallback, 0 );
 
 	if ( !glXMakeContextCurrent(dpy, 0, 0, 0) ){ printf("failed to make current\n"); }
 
