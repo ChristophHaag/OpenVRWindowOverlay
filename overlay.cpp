@@ -106,12 +106,10 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 			std::cout << "Allocating new texture: " << width << "x" << height << std::endl;
 			cached_height = height;
 			cached_width = width;
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
 		}
 
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
-
-
-		//glTexSubImage2D(GL_TEXTURE_2D, 0 ,0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
+		glTexSubImage2D(GL_TEXTURE_2D, 0 ,0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
 
 		Texture_t tex;
 		tex.handle = (void*)cached_texture;
