@@ -97,7 +97,7 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
 		// still better: Copy to GL texture and update overlay with it
-		if (true /* TODO: only when size changed */ || width != cached_width || height != cached_height) {
+		if (width != cached_width || height != cached_height) {
 			if (cached_texture != 0) {
 				glDeleteTextures(1, &cached_texture);
 			}
@@ -119,8 +119,6 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		tex.eType = TextureType_OpenGL;
 		//std::cout << "Uploading " << width << "x" << height << " " << bps << " OpenGL texture " << texid << "  to overlay " << handle << std::endl;
 		VROverlay()->SetOverlayTexture(handle, &tex);
-
-		glDeleteTextures(1, &cached_texture);
 
 		// best: use gstreamer gstglupload to get GL texture directly
 		// TODO
