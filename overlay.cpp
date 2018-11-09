@@ -17,6 +17,7 @@
 #define GL3_PROTOTYPES 1
 #include <GL/gl.h>
 #include <GL/glx.h>
+#include <SDL.h>
 
 using namespace vr;
 
@@ -27,17 +28,22 @@ void GLAPIENTRY messageCallback( GLenum source, GLenum type, GLuint id, GLenum s
 	printf("GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n", ( type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : "" ), type, severity, message );
 }
 
-int VIDEOFPS = 5;
+int VIDEOFPS = 30;
+
+int cached_width = -1;
+int cached_height = -1;
+GLuint cached_texture = 0;
 
 VROverlayHandle_t handle;
-Display *dpy;
-GLXContext ctx;
-GLXPbuffer pbuf;
 
+SDL_Window *mainwindow;
+SDL_GLContext maincontext;
 
 float x = 2.0;
 float y = 1.0;
 float z = -1.0;
+
+
 
 static GstFlowReturn
 on_new_sample_from_sink (GstElement * elt, gpointer data)
@@ -45,8 +51,6 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 	//std::cout << "Got sample" << std::endl;
 	GstSample *sample;
 	GstBuffer *app_buffer, *buffer;
-	GstElement *source;
-	GstFlowReturn ret;
 	/* get the sample from appsink */
 	sample = gst_app_sink_pull_sample (GST_APP_SINK (elt));
 	buffer = gst_sample_get_buffer (sample);
@@ -64,9 +68,15 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 	static int counter = 0;
 	GstMapInfo map;
 	if (gst_buffer_map (buffer, &map, GST_MAP_READ)) {
-		auto pixbuf = gdk_pixbuf_new_from_data (map.data, GDK_COLORSPACE_RGB, TRUE, 8, width, height, GST_ROUND_UP_4 (width * 4), NULL, NULL);
-		guchar* rgb = gdk_pixbuf_get_pixels(pixbuf);
+		GdkPixbuf *pixbuf = gdk_pixbuf_new_from_data (map.data, GDK_COLORSPACE_RGB, TRUE, 8, width, height, GST_ROUND_UP_4 (width * 4), NULL, NULL);
+
+		// TODO: not on the CPU and not with a copy
+		GdkPixbuf *original_pixbuf = pixbuf;
+		pixbuf = gdk_pixbuf_flip  (pixbuf, FALSE);
+		g_object_unref(original_pixbuf);
+
 		int bps = gdk_pixbuf_get_bits_per_sample(pixbuf);
+		guchar* rgb = gdk_pixbuf_get_pixels(pixbuf);
 
 		// Worst: Save images and set from image.
 		// SteamVR maintains cache filename - image, so we need a new filename every time
@@ -83,29 +93,34 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		//std::cout << "Uploading " << width << "x" << height << " " << bps << " buffer to overlay " << handle << std::endl;
 		//VROverlay()->SetOverlayRaw(handle, rgb, width, height, 4);
 
+		SDL_GL_MakeCurrent(mainwindow,maincontext);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
 		// still better: Copy to GL texture and update overlay with it
-		if ( !glXMakeContextCurrent(dpy, pbuf, pbuf, ctx) ){ printf("failed to make current\n"); }
-		GLuint texid;
-		glGenTextures(1, &texid); // TODO: reuse
-		glBindTexture(GL_TEXTURE_2D, texid);
+		if (true /* TODO: only when size changed */ || width != cached_width || height != cached_height) {
+			if (cached_texture != 0) {
+				glDeleteTextures(1, &cached_texture);
+			}
+			glGenTextures(1, &cached_texture);
+			glBindTexture(GL_TEXTURE_2D, cached_texture);
+			std::cout << "Allocating new texture: " << width << "x" << height << std::endl;
+			cached_height = height;
+			cached_width = width;
+		}
 
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
 
 		//glTexSubImage2D(GL_TEXTURE_2D, 0 ,0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
 
 		Texture_t tex;
-		tex.handle = &texid;
+		tex.handle = (void*)cached_texture;
 		tex.eColorSpace = ColorSpace_Auto;
 		tex.eType = TextureType_OpenGL;
-		std::cout << "Uploading " << width << "x" << height << " " << bps << " OpenGL texture " << texid << "  to overlay " << handle << std::endl;
+		//std::cout << "Uploading " << width << "x" << height << " " << bps << " OpenGL texture " << texid << "  to overlay " << handle << std::endl;
 		VROverlay()->SetOverlayTexture(handle, &tex);
 
-		glDeleteTextures(1, &texid);
+		glDeleteTextures(1, &cached_texture);
 
 		// best: use gstreamer gstglupload to get GL texture directly
 		// TODO
@@ -113,14 +128,32 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		g_object_unref(pixbuf);
 	}
 
+	SDL_Event event;
+	while(SDL_PollEvent(&event)) {
+		if (event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)) {
+			exit(0); // screw cleaning up
+		}
+	}
+
+
+
 	gst_sample_unref (sample);
 	return GST_FLOW_OK;
 }
 
-typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
-typedef Bool (*glXMakeContextCurrentARBProc)(Display*, GLXDrawable, GLXDrawable, GLXContext);
-static glXCreateContextAttribsARBProc glXCreateContextAttribsARB = 0;
-static glXMakeContextCurrentARBProc glXMakeContextCurrentARB = 0;
+void checkSDLError(int line = -1)
+{
+	#ifndef NDEBUG
+	const char *error = SDL_GetError();
+	if (*error != '\0')
+	{
+		printf("SDL Error: %s\n", error);
+		if (line != -1)
+			printf(" + line: %i\n", line);
+		SDL_ClearError();
+	}
+	#endif
+}
 
 int main(int argc, char **argv) { (void) argc; (void) argv;
 	if (argc <= 1) {
@@ -128,48 +161,30 @@ int main(int argc, char **argv) { (void) argc; (void) argv;
 		return 1;
 	}
 
-	static int visual_attribs[] = {
-		None
-	};
-	int context_attribs[] = {
-		GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-		GLX_CONTEXT_MINOR_VERSION_ARB, 0,
-		None
-	};
-
-	dpy = XOpenDisplay(0);
-	int fbcount = 0;
-	GLXFBConfig* fbc = glXChooseFBConfig(dpy, DefaultScreen(dpy), visual_attribs, &fbcount);
-	if ( !fbc) { fprintf(stderr, "Failed to get FBConfig\n"); }
-
-	glXCreateContextAttribsARB = (glXCreateContextAttribsARBProc)glXGetProcAddressARB( (const GLubyte *) "glXCreateContextAttribsARB");
-	glXMakeContextCurrentARB = (glXMakeContextCurrentARBProc)glXGetProcAddressARB( (const GLubyte *) "glXMakeContextCurrent");
-	if ( !(glXCreateContextAttribsARB && glXMakeContextCurrentARB) ){ fprintf(stderr, "missing support for GLX_ARB_create_context\n"); }
-
-	if ( !( ctx = glXCreateContextAttribsARB(dpy, fbc[0], 0, True, context_attribs)) ){ fprintf(stderr, "Failed to create opengl context\n"); }
-
-	int pbuffer_attribs[] = {
-		GLX_PBUFFER_WIDTH, 800,
-		GLX_PBUFFER_HEIGHT, 600,
-		None
-	};
-	pbuf = glXCreatePbuffer(dpy, fbc[0], pbuffer_attribs);
-
-	if ( !glXMakeContextCurrent(dpy, pbuf, pbuf, ctx) ){ printf("failed to make current\n"); }
-
-	XFree(fbc);
-	XSync(dpy, False);
+	if (SDL_Init(SDL_INIT_VIDEO) < 0)
+		return 1;
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+	mainwindow = SDL_CreateWindow("window overlay companion window",
+				      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+				      512, 512, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+	if (!mainwindow)
+		return 1;
+	checkSDLError(__LINE__);
+	maincontext = SDL_GL_CreateContext(mainwindow);
+	checkSDLError(__LINE__);
+	SDL_GL_SetSwapInterval(0);
 
 	printf("GL_RENDERER   = %s\n", (char *) glGetString(GL_RENDERER));
 	printf("GL_VERSION    = %s\n", (char *) glGetString(GL_VERSION));
 	printf("GL_VENDOR     = %s\n", (char *) glGetString(GL_VENDOR));
 
+	SDL_GL_MakeCurrent(0,0);
+
 	glEnable              ( GL_DEBUG_OUTPUT );
 	glDebugMessageCallback( messageCallback, 0 );
-
-	if ( !glXMakeContextCurrent(dpy, 0, 0, 0) ){ printf("failed to make current\n"); }
-
-
 
 	EVRInitError error;
 	VR_Init(&error, vr::VRApplication_Overlay);
