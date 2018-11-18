@@ -43,7 +43,15 @@ float x = 2.0;
 float y = 1.0;
 float z = -1.0;
 
-
+void setTranslation() {
+	VROverlay()->ShowOverlay(handle);
+	std::cout << "Setting translation " << x << " " << y << " " << z << std::endl;
+	vr::HmdMatrix34_t transform = {
+		1.0f, 0.0f, 0.0f, x,
+		0.0f, 1.0f, 0.0f, y,
+		0.0f, 0.0f, 1.0f, z};
+	VROverlay()->SetOverlayTransformAbsolute(handle, TrackingUniverseStanding, &transform);
+}
 
 static GstFlowReturn
 on_new_sample_from_sink (GstElement * elt, gpointer data)
@@ -129,6 +137,20 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		if (event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)) {
 			exit(0); // screw cleaning up
 		}
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_UP)
+			y += 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_DOWN)
+			y -= 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_LEFT)
+			x -= 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_RIGHT)
+			x += 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_PAGEDOWN)
+			z -= 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_PAGEUP)
+			z += 0.2;
+		if (event.type == SDL_KEYDOWN)
+			setTranslation();
 	}
 
 
@@ -190,11 +212,7 @@ int main(int argc, char **argv) { (void) argc; (void) argv;
 	std::cout << "Created overlay" << std::endl;
 
 	VROverlay()->SetOverlayWidthInMeters(handle, 3);
-	VROverlay()->ShowOverlay(handle);
-	vr::HmdMatrix34_t transform = {1.0f, 0.0f, 0.0f, x,
-	                               0.0f, 1.0f, 0.0f, y,
-	                               0.0f, 0.0f, 1.0f, z};
-	VROverlay()->SetOverlayTransformAbsolute(handle, TrackingUniverseStanding, &transform);
+	setTranslation();
 
 	GstElement *pipeline;
 	GstState state;
