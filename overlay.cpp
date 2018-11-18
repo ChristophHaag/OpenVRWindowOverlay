@@ -42,6 +42,7 @@ SDL_GLContext maincontext;
 float x = 2.0;
 float y = 1.0;
 float z = -1.0;
+float overlaywidth = 2.0;
 
 void setTranslation() {
 	VROverlay()->ShowOverlay(handle);
@@ -53,19 +54,20 @@ void setTranslation() {
 	VROverlay()->SetOverlayTransformAbsolute(handle, TrackingUniverseStanding, &transform);
 }
 
+void setWidth() {
+	std::cout << "Setting width " << overlaywidth << "m" << std::endl;
+	VROverlay()->SetOverlayWidthInMeters(handle, overlaywidth);
+}
+
 static GstFlowReturn
 on_new_sample_from_sink (GstElement * elt, gpointer data)
 {
 	//std::cout << "Got sample" << std::endl;
 	GstSample *sample;
-	GstBuffer *app_buffer, *buffer;
+	GstBuffer *buffer;
 	/* get the sample from appsink */
 	sample = gst_app_sink_pull_sample (GST_APP_SINK (elt));
 	buffer = gst_sample_get_buffer (sample);
-
-	/* make a copy */
-	app_buffer = gst_buffer_copy (buffer);
-	/* we don't need the appsink sample anymore */
 
 	int width, height;
 	GstCaps *caps = gst_sample_get_caps(sample);
@@ -118,6 +120,7 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		}
 
 		glTexSubImage2D(GL_TEXTURE_2D, 0 ,0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, (GLvoid*)rgb);
+		g_object_unref(pixbuf);
 
 		Texture_t tex;
 		tex.handle = (void*)cached_texture;
@@ -129,7 +132,7 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 		// best: use gstreamer gstglupload to get GL texture directly
 		// TODO
 
-		g_object_unref(pixbuf);
+		gst_buffer_unmap(buffer, &map);
 	}
 
 	SDL_Event event;
@@ -149,11 +152,15 @@ on_new_sample_from_sink (GstElement * elt, gpointer data)
 			z -= 0.2;
 		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_PAGEUP)
 			z += 0.2;
-		if (event.type == SDL_KEYDOWN)
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_PLUS)
+			overlaywidth += 0.2;
+		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_MINUS)
+			overlaywidth -= 0.2;
+		if (event.type == SDL_KEYDOWN) {
 			setTranslation();
+			setWidth();
+		}
 	}
-
-
 
 	gst_sample_unref (sample);
 	return GST_FLOW_OK;
@@ -211,7 +218,7 @@ int main(int argc, char **argv) { (void) argc; (void) argv;
 	VROverlay()->CreateOverlay ("openvr.overlay.window", "A Window", &handle);
 	std::cout << "Created overlay" << std::endl;
 
-	VROverlay()->SetOverlayWidthInMeters(handle, 3);
+	setWidth();
 	setTranslation();
 
 	GstElement *pipeline;
